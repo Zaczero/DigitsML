@@ -5,21 +5,26 @@ import gzip
 import glob
 import shutil
 import numpy as np
-from hyperopt import hp, fmin, tpe, space_eval
-from matplotlib import pyplot as plt
 from mnist import MNIST
-from tensorflow.keras.optimizers import SGD
+import tensorflow as tf
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPool2D, Flatten, Dense, Dropout
-
-MNIST_DOWNLOAD_URL = 'https://data.deepai.org/mnist.zip'
-MNIST_DIRECTORY = 'mnist'
-IMAGE_SIZE = 28
-MODEL_FILE = 'model.hdf5'
+from keras import get_keras_model_initialized
+from optimize import hp_optimize
+from config import MNIST_DIRECTORY, MNIST_DOWNLOAD_URL, IMAGE_SIZE, MODEL_FILE
 
 
-def install_dataset():
+try:
+    # reduce initial gpu memory allocation (faster startup)
+    for gpu in tf.config.list_physical_devices('GPU'):
+        tf.config.experimental.set_memory_growth(gpu, True)
+except Exception as e:
+    print(e)
+
+
+def ensure_dataset():
+    if os.path.exists(MNIST_DIRECTORY):
+        return
+
     archive_path = os.path.join(MNIST_DIRECTORY, 'mnist.zip')
 
     print('Downloading dataset')
@@ -56,63 +61,19 @@ def to_categorical(data):
     return result
 
 
-def prepare_data(x, y):
+def prepare_data(x, y=None):
     x = np.array(x)
-    y = np.array(y)
-
     x = np.reshape(x, (len(x), IMAGE_SIZE, IMAGE_SIZE, 1)) / 255.0
-    y = to_categorical(y)
+
+    if y is not None:
+        y = np.array(y)
+        y = to_categorical(y)
 
     return x, y
 
 
-def get_model(conv_size_1, conv_kern_1,
-              conv_size_2, conv_kern_2,
-              dense_size_1,
-              learning_rate, momentum, nesterov):
-
-    model = Sequential()
-
-    model.add(Conv2D(conv_size_1, conv_kern_1, activation='relu', input_shape=(IMAGE_SIZE, IMAGE_SIZE, 1)))
-    model.add(MaxPool2D(2))
-    model.add(Dropout(.2))
-    model.add(Conv2D(conv_size_2, conv_kern_2, activation='relu'))
-    model.add(MaxPool2D(2))
-    model.add(Dropout(.2))
-    model.add(Flatten())
-    model.add(Dense(dense_size_1, activation='relu'))
-    model.add(Dense(10, activation='softmax'))
-
-    optimizer = SGD(learning_rate, momentum, nesterov)
-
-    model.compile(optimizer, 'categorical_crossentropy', metrics=['accuracy'])
-
-    return model
-
-
-def get_model_initialized():
-    model = get_model(**{
-        'conv_size_1': 8.0,
-        'conv_kern_1': 5,
-
-        'conv_size_2': 30.0,
-        'conv_kern_2': 3,
-
-        'dense_size_1': 21.0,
-
-        'learning_rate': 0.29421394650707094,
-        'momentum': 0.05552671455772779,
-        'nesterov': False
-    })
-
-    if os.path.exists(MODEL_FILE):
-        model.load_weights(MODEL_FILE)
-
-    return model
-
-
-def train_model():
-    model = get_model_initialized()
+def train_model(x, y):
+    model = get_keras_model_initialized()
 
     callbacks = [
         EarlyStopping(patience=5),
@@ -120,7 +81,7 @@ def train_model():
     ]
 
     model.summary()
-    model.fit(X_train, y_train,
+    model.fit(x, y,
               batch_size=64,
               epochs=100,
               verbose=2,
@@ -133,54 +94,12 @@ def train_model():
     return model
 
 
-def hp_objective(args):
-    model = get_model(**args)
-
-    hist = model.fit(X_train, y_train,
-                     batch_size=64,
-                     epochs=5,
-                     verbose=2,
-                     validation_split=.2)
-
-    return hist.history['val_loss'][-1]
-
-
-def hp_optimize():
-    space = {
-        'conv_size_1': hp.quniform('conv_size_1', 4, 32, 1),
-        'conv_kern_1': hp.choice('conv_kern_1', [3, 5]),
-
-        'conv_size_2': hp.quniform('conv_size_2', 4, 32, 1),
-        'conv_kern_2': hp.choice('conv_kern_2', [3, 5]),
-
-        'dense_size_1': hp.quniform('dense_size_1', 4, 32, 1),
-
-        'learning_rate': hp.uniform('learning_rate', 0.001, 1),
-        'momentum': hp.uniform('momentum', 0, 1),
-        'nesterov': hp.choice('nesterov', [True, False]),
-    }
-
-    best = fmin(hp_objective, space, tpe.suggest, 1)
-
-    print(space_eval(space, best))
-
-
-def show_image(data):
-    size = int(np.sqrt(len(data)))
-    data = np.reshape(data, (size, size))
-    plt.imshow(data)
-    plt.show()
-
-
-if not os.path.exists(MNIST_DIRECTORY):
-    install_dataset()
+ensure_dataset()
 
 mndata = MNIST(MNIST_DIRECTORY)
-X_train, y_train = mndata.load_training()
-X_test, y_test = mndata.load_testing()
+X_train, y_train = prepare_data(*mndata.load_training())
+X_test, y_test = prepare_data(*mndata.load_testing())
 
-X_train, y_train = prepare_data(X_train, y_train)
-X_test, y_test = prepare_data(X_test, y_test)
+# print(hp_optimize(X_train, y_train))
 
-# hp_optimize()
-train_model()
+train_model(X_train, y_train)
